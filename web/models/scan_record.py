@@ -1,4 +1,5 @@
 from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean
+from sqlalchemy.dialects.mysql import LONGTEXT
 from web.config.database import Base
 from datetime import datetime
 
@@ -10,8 +11,8 @@ class ScanRecord(Base):
     ports = Column(String(255), nullable=False)
     mode = Column(String(50), default='full')
     status = Column(String(20), default='running')
-    results = Column(Text)
-    stats = Column(Text)
+    results = Column(LONGTEXT)  # 使用 LONGTEXT 支持更大的数据
+    stats = Column(LONGTEXT)
     created_at = Column(DateTime, default=datetime.now)
     completed_at = Column(DateTime)
     scan_duration = Column(Integer)

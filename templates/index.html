@@ -1282,11 +1282,17 @@
 
         // 更新摘要信息
         function updateSummary(data) {
+            if (!data || !data.results) {
+                console.warn('updateSummary called with invalid data');
+                return;
+            }
+            
             const highRiskPorts = [21, 22, 23, 25, 53, 80, 135, 139, 443, 445, 1433, 1521, 2181, 3306, 3389, 5432, 6379, 7001, 8080, 9000];
             
-            const total = data.results.length;
-            const open = data.results.filter(r => r.status === 'open').length;
-            const highRisk = data.results.filter(r => highRiskPorts.includes(r.port)).length;
+            const results = Array.isArray(data.results) ? data.results : [];
+            const total = results.length;
+            const open = results.filter(r => r.status === 'open').length;
+            const highRisk = results.filter(r => highRiskPorts.includes(r.port)).length;
             const scanTime = new Date().toLocaleString();
             
             document.getElementById('summaryTotal').textContent = total;

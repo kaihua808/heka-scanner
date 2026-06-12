@@ -53,8 +53,6 @@ def start_scan():
     if not ip_or_cidr:
         return jsonify({'error': 'IP地址不能为空'}), 400
 
-    scan_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
-    
     # 同步执行扫描（不使用异步，确保稳定）
     try:
         # 添加进度回调
@@ -68,9 +66,6 @@ def start_scan():
             progress_callback=progress_callback
         )
 
-        # 缓存结果
-        scan_cache[scan_id] = result
-        
         # 先保存到MySQL获取统一ID（用try-except包裹，防止数据库问题阻塞）
         db_record_id = None
         if db_service.mysql_available:
@@ -89,10 +84,16 @@ def start_scan():
                 print(f"MySQL error (non-fatal): {db_error}")
                 db_record_id = None  # 回退到使用时间戳ID
         
-        # 添加到内存历史（使用数据库ID或时间戳ID）
+        # 使用统一的ID（优先数据库ID）
+        final_scan_id = db_record_id if db_record_id else f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+        
+        # 缓存结果（使用统一ID）
+        scan_cache[final_scan_id] = result
+        
+        # 添加到内存历史（使用统一ID）
         with history_lock:
             scan_history.append({
-                'id': db_record_id if db_record_id else scan_id,
+                'id': final_scan_id,
                 'timestamp': datetime.now().isoformat(),
                 'target': ip_or_cidr,
                 'ports': port_str,
@@ -104,7 +105,7 @@ def start_scan():
 
         return jsonify({
             'status': 'completed' if result.get('success') else 'failed',
-            'scan_id': scan_id,
+            'scan_id': final_scan_id,
             'message': '扫描完成' if result.get('success') else result.get('error', '扫描失败'),
             'results': result.get('results', []),
             'stats': result.get('stats', {}),
@@ -113,9 +114,11 @@ def start_scan():
 
     except Exception as e:
         print(f"Scan error: {e}")
+        # 使用时间戳ID作为错误情况下的ID
+        error_scan_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
         with history_lock:
             scan_history.append({
-                'id': scan_id,
+                'id': error_scan_id,
                 'timestamp': datetime.now().isoformat(),
                 'target': ip_or_cidr,
                 'ports': port_str,
@@ -267,18 +270,38 @@ def get_scan_results(scan_id: str):
 
 @app.route('/api/history')
 def get_history():
-    with history_lock:
-        history_data = scan_history[-50:]
-    
-    # 如果MySQL可用，合并数据库中的历史记录
+    # 优先从MySQL读取历史记录（数据库记录更准确）
     if db_service.mysql_available:
         db_records = db_service.get_all_records(limit=50)
         if db_records:
-            # 合并去重，优先使用内存中的最新数据
-            record_ids = set(r['id'] for r in history_data)
-            for db_record in db_records:
-                if db_record['id'] not in record_ids:
-                    history_data.append(db_record)
+            # 转换数据库记录格式，添加必要字段
+            history_data = []
+            for record in db_records:
+                # 安全解析 results 字段
+                results = []
+                if record.get('results'):
+                    try:
+                        parsed = json.loads(record['results'])
+                        if isinstance(parsed, list):
+                            results = parsed
+                    except:
+                        results = []
+                
+                history_data.append({
+                    'id': record['id'],
+                    'timestamp': record['created_at'],
+                    'target': record['target'],
+                    'ports': record['ports'],
+                    'mode': record['mode'],
+                    'status': record['status'],
+                    'open_ports': len(results),
+                    'duration': record.get('scan_duration', 0)
+                })
+            return jsonify({'history': history_data})
+    
+    # 如果MySQL不可用，回退到内存历史
+    with history_lock:
+        history_data = scan_history[-50:]
     
     return jsonify({'history': history_data})
 
@@ -411,20 +434,42 @@ def scan_progress():
                 # 先保存到MySQL获取统一ID（用try-except包裹，防止数据库问题阻塞）
                 db_record_id = None
                 if db_service.mysql_available:
+                    # 单独处理每个数据库操作，确保状态总是被更新
                     try:
+                        print(f"[DEBUG] Saving scan record to MySQL: ip={ip}, ports={ports}, mode={scan_mode}")
                         db_record_id = db_service.save_scan_record(ip, ports, scan_mode)
-                        if db_record_id:
-                            db_service.update_scan_status(
+                        print(f"[DEBUG] Got record ID: {db_record_id}")
+                    except Exception as e:
+                        print(f"[ERROR] save_scan_record failed: {e}")
+                        db_record_id = None
+                    
+                    if db_record_id:
+                        # 保存端口扫描结果（单独try-except）
+                        results = result.get('results', [])
+                        try:
+                            print(f"[DEBUG] Saving {len(results)} scan results")
+                            save_result = db_service.save_scan_results(db_record_id, results)
+                            print(f"[DEBUG] save_scan_results returned: {save_result}")
+                        except Exception as e:
+                            print(f"[ERROR] save_scan_results failed: {e}")
+                        
+                        # 更新扫描状态（单独try-except，确保状态总是被更新）
+                        status = 'completed' if result.get('success') else 'failed'
+                        try:
+                            print(f"[DEBUG] Updating status to: {status}")
+                            update_result = db_service.update_scan_status(
                                 db_record_id,
-                                'completed' if result.get('success') else 'failed',
-                                result.get('results', []),
+                                status,
+                                results,
                                 result.get('stats', {}),
                                 result.get('duration', 0)
                             )
-                            db_service.save_scan_results(db_record_id, result.get('results', []))
-                    except Exception as db_error:
-                        print(f"MySQL error (non-fatal): {db_error}")
-                        db_record_id = None  # 回退到使用时间戳ID
+                            print(f"[DEBUG] update_scan_status returned: {update_result}")
+                            print(f"[DEBUG] Successfully saved scan {db_record_id} to MySQL")
+                        except Exception as e:
+                            print(f"[ERROR] update_scan_status failed: {e}")
+                else:
+                    print(f"[DEBUG] MySQL not available, skipping database save")
                 
                 # 使用统一的ID（优先数据库ID）
                 final_scan_id = db_record_id if db_record_id else f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
@@ -451,7 +496,7 @@ def scan_progress():
                         'percentage': 100,
                         'open_count': result.get('stats', {}).get('open', 0),
                         'status': 'completed',
-                        'scan_id': scan_id,
+                        'scan_id': final_scan_id,
                         'success': result.get('success', False)
                     }
                 
