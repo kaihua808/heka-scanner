@@ -8,6 +8,8 @@ from typing import Dict, Any, List
 # 全局变量用于跟踪扫描进度
 scan_progress_data = {}
 progress_lock = threading.Lock()
+is_scanning = False  # 扫描状态标志
+scan_lock = threading.Lock()  # 扫描锁，防止重复扫描
 
 import sys
 from pathlib import Path
@@ -69,10 +71,28 @@ def start_scan():
         # 缓存结果
         scan_cache[scan_id] = result
         
-        # 添加到历史（内存 + MySQL）
+        # 先保存到MySQL获取统一ID（用try-except包裹，防止数据库问题阻塞）
+        db_record_id = None
+        if db_service.mysql_available:
+            try:
+                db_record_id = db_service.save_scan_record(ip_or_cidr, port_str, scan_mode)
+                if db_record_id:
+                    db_service.update_scan_status(
+                        db_record_id,
+                        'completed' if result.get('success') else 'failed',
+                        result.get('results', []),
+                        result.get('stats', {}),
+                        result.get('duration', 0)
+                    )
+                    db_service.save_scan_results(db_record_id, result.get('results', []))
+            except Exception as db_error:
+                print(f"MySQL error (non-fatal): {db_error}")
+                db_record_id = None  # 回退到使用时间戳ID
+        
+        # 添加到内存历史（使用数据库ID或时间戳ID）
         with history_lock:
             scan_history.append({
-                'id': scan_id,
+                'id': db_record_id if db_record_id else scan_id,
                 'timestamp': datetime.now().isoformat(),
                 'target': ip_or_cidr,
                 'ports': port_str,
@@ -81,19 +101,6 @@ def start_scan():
                 'open_ports': result.get('stats', {}).get('open', 0),
                 'duration': result.get('duration', 0)
             })
-        
-        # 保存到MySQL
-        if db_service.mysql_available:
-            db_record_id = db_service.save_scan_record(ip_or_cidr, port_str, scan_mode)
-            if db_record_id:
-                db_service.update_scan_status(
-                    db_record_id,
-                    'completed' if result.get('success') else 'failed',
-                    result.get('results', []),
-                    result.get('stats', {}),
-                    result.get('duration', 0)
-                )
-                db_service.save_scan_results(db_record_id, result.get('results', []))
 
         return jsonify({
             'status': 'completed' if result.get('success') else 'failed',
@@ -276,6 +283,18 @@ def get_history():
     return jsonify({'history': history_data})
 
 
+@app.route('/api/history/clear', methods=['DELETE'])
+def clear_history():
+    with history_lock:
+        scan_history.clear()
+    
+    # 如果MySQL可用，也清空数据库中的记录
+    if db_service.mysql_available:
+        db_service.clear_all_records()
+    
+    return jsonify({'success': True, 'message': '历史记录已清空'})
+
+
 @app.route('/api/stats')
 def get_stats():
     with history_lock:
@@ -355,15 +374,22 @@ def export_results():
 
 @app.route('/api/scan/progress')
 def scan_progress():
+    global is_scanning
+    
     ip = request.args.get('ip')
     ports = request.args.get('ports')
     scan_mode = request.args.get('mode', 'full')
     request_id = f"{ip}_{ports}_{scan_mode}_{datetime.now().timestamp()}"
     
     def generate():
+        global is_scanning
         # 异步执行扫描
         def do_scan():
             nonlocal request_id
+            # 设置扫描状态
+            with scan_lock:
+                is_scanning = True
+            
             try:
                 def progress_callback(completed, total, open_count=0):
                     with progress_lock:
@@ -382,12 +408,32 @@ def scan_progress():
                     progress_callback=progress_callback
                 )
                 
-                scan_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
-                scan_cache[scan_id] = result
+                # 先保存到MySQL获取统一ID（用try-except包裹，防止数据库问题阻塞）
+                db_record_id = None
+                if db_service.mysql_available:
+                    try:
+                        db_record_id = db_service.save_scan_record(ip, ports, scan_mode)
+                        if db_record_id:
+                            db_service.update_scan_status(
+                                db_record_id,
+                                'completed' if result.get('success') else 'failed',
+                                result.get('results', []),
+                                result.get('stats', {}),
+                                result.get('duration', 0)
+                            )
+                            db_service.save_scan_results(db_record_id, result.get('results', []))
+                    except Exception as db_error:
+                        print(f"MySQL error (non-fatal): {db_error}")
+                        db_record_id = None  # 回退到使用时间戳ID
                 
+                # 使用统一的ID（优先数据库ID）
+                final_scan_id = db_record_id if db_record_id else f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}"
+                scan_cache[final_scan_id] = result
+                
+                # 添加到内存历史（使用统一ID）
                 with history_lock:
                     scan_history.append({
-                        'id': scan_id,
+                        'id': final_scan_id,
                         'timestamp': datetime.now().isoformat(),
                         'target': ip,
                         'ports': ports,
@@ -396,19 +442,6 @@ def scan_progress():
                         'open_ports': result.get('stats', {}).get('open', 0),
                         'duration': result.get('duration', 0)
                     })
-                
-                # 保存到MySQL
-                if db_service.mysql_available:
-                    db_record_id = db_service.save_scan_record(ip, ports, scan_mode)
-                    if db_record_id:
-                        db_service.update_scan_status(
-                            db_record_id,
-                            'completed' if result.get('success') else 'failed',
-                            result.get('results', []),
-                            result.get('stats', {}),
-                            result.get('duration', 0)
-                        )
-                        db_service.save_scan_results(db_record_id, result.get('results', []))
                 
                 # 更新最终进度
                 with progress_lock:
@@ -421,6 +454,10 @@ def scan_progress():
                         'scan_id': scan_id,
                         'success': result.get('success', False)
                     }
+                
+                # 扫描完成，重置扫描标志
+                with scan_lock:
+                    is_scanning = False
                     
             except Exception as e:
                 with progress_lock:
@@ -432,6 +469,10 @@ def scan_progress():
                         'status': 'error',
                         'error': str(e)
                     }
+                
+                # 扫描出错，重置扫描标志
+                with scan_lock:
+                    is_scanning = False
         
         scan_thread = threading.Thread(target=do_scan)
         scan_thread.start()

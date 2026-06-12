@@ -113,5 +113,15 @@ class DatabaseService:
             db.add(scan_result)
         db.commit()
         return True
+    
+    def clear_all_records(self):
+        if not self.mysql_available:
+            return False
+        
+        db = next(get_db())
+        db.query(ScanResult).delete()
+        db.query(ScanRecord).delete()
+        db.commit()
+        return True
 
 db_service = DatabaseService()
