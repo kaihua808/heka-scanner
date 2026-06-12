@@ -538,7 +538,7 @@ class ResultExporter:
                 return False, "签名哈希值不完整"
 
             data_without_sig = {k: v for k, v in data.items() if k != "signature"}
-            content_part = json.dumps(data_without_sig, indent=2, sort_keys=True)
+            content_part = json.dumps(data_without_sig, indent=2, ensure_ascii=False)
 
             calculated_hash = self.signer.calculate_hash(content_part)
             is_valid = calculated_hash == hash_value
