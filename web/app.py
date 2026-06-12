@@ -14,7 +14,6 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from web.scan_service import ScanService
-from web.services.db_service import db_service
 
 app = Flask(__name__,
             template_folder='../templates',
@@ -69,7 +68,6 @@ def start_scan():
         # 缓存结果
         scan_cache[scan_id] = result
         
-        # 添加到历史（内存 + MySQL）
         with history_lock:
             scan_history.append({
                 'id': scan_id,
@@ -81,19 +79,6 @@ def start_scan():
                 'open_ports': result.get('stats', {}).get('open', 0),
                 'duration': result.get('duration', 0)
             })
-        
-        # 保存到MySQL
-        if db_service.mysql_available:
-            db_record_id = db_service.save_scan_record(ip_or_cidr, port_str, scan_mode)
-            if db_record_id:
-                db_service.update_scan_status(
-                    db_record_id,
-                    'completed' if result.get('success') else 'failed',
-                    result.get('results', []),
-                    result.get('stats', {}),
-                    result.get('duration', 0)
-                )
-                db_service.save_scan_results(db_record_id, result.get('results', []))
 
         return jsonify({
             'status': 'completed' if result.get('success') else 'failed',
@@ -117,12 +102,6 @@ def start_scan():
                 'open_ports': 0,
                 'duration': 0
             })
-        
-        # 保存到MySQL
-        if db_service.mysql_available:
-            db_record_id = db_service.save_scan_record(ip_or_cidr, port_str, scan_mode)
-            if db_record_id:
-                db_service.update_scan_status(db_record_id, 'failed')
         
         violation = scan_service.get_last_violation()
         return jsonify({
@@ -210,17 +189,6 @@ def get_scan_results(scan_id: str):
     with history_lock:
         scan = next((s for s in scan_history if s['id'] == scan_id), None)
         if not scan:
-            # 尝试从MySQL获取
-            if db_service.mysql_available:
-                db_record = db_service.get_scan_record(scan_id)
-                if db_record:
-                    return jsonify({
-                        'results': db_record.get('results', []),
-                        'stats': db_record.get('stats', {}),
-                        'sla': {},
-                        'violation': None,
-                        'scan_id': scan_id
-                    })
             return jsonify({'error': 'Scan not found'}), 404
 
         # 检查扫描是否失败（违规）
@@ -262,17 +230,7 @@ def get_scan_results(scan_id: str):
 def get_history():
     with history_lock:
         history_data = scan_history[-50:]
-    
-    # 如果MySQL可用，合并数据库中的历史记录
-    if db_service.mysql_available:
-        db_records = db_service.get_all_records(limit=50)
-        if db_records:
-            # 合并去重，优先使用内存中的最新数据
-            record_ids = set(r['id'] for r in history_data)
-            for db_record in db_records:
-                if db_record['id'] not in record_ids:
-                    history_data.append(db_record)
-    
+
     return jsonify({'history': history_data})
 
 
@@ -305,15 +263,7 @@ def export_results():
         if scan_id:
             scan = next((s for s in scan_history if s['id'] == scan_id), None)
             if not scan:
-                # 尝试从MySQL获取
-                if db_service.mysql_available:
-                    db_record = db_service.get_scan_record(scan_id)
-                    if db_record:
-                        scan = db_record
-                    else:
-                        return jsonify({'error': 'Scan not found'}), 404
-                else:
-                    return jsonify({'error': 'Scan not found'}), 404
+                return jsonify({'error': 'Scan not found'}), 404
         elif scan_history:
             scan = scan_history[-1]
             scan_id = scan['id']
@@ -396,19 +346,6 @@ def scan_progress():
                         'open_ports': result.get('stats', {}).get('open', 0),
                         'duration': result.get('duration', 0)
                     })
-                
-                # 保存到MySQL
-                if db_service.mysql_available:
-                    db_record_id = db_service.save_scan_record(ip, ports, scan_mode)
-                    if db_record_id:
-                        db_service.update_scan_status(
-                            db_record_id,
-                            'completed' if result.get('success') else 'failed',
-                            result.get('results', []),
-                            result.get('stats', {}),
-                            result.get('duration', 0)
-                        )
-                        db_service.save_scan_results(db_record_id, result.get('results', []))
                 
                 # 更新最终进度
                 with progress_lock:
