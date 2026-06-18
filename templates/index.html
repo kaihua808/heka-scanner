@@ -5,6 +5,13 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>端口扫描器 - Web管理界面</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.8/dist/chart.umd.min.js"></script>
+<script>
+    // 如果 CDN 加载失败，定义一个空的 Chart 对象防止报错
+    window.Chart = window.Chart || {
+        register: function() {},
+        defaults: { plugins: { legend: { display: false } } }
+    };
+</script>
     <style>
         * {
             margin: 0;
@@ -460,7 +467,88 @@
             margin-top: 5px;
             font-style: italic;
         }
-    </style>
+        
+        /* 分页控件样式 */
+        .pagination-container {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: 5px;
+        }
+        
+        .pagination-info {
+            color: #666;
+            font-size: 14px;
+        }
+        
+        .pagination-controls {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .pagination-controls button {
+            padding: 6px 12px;
+            border: 1px solid #ddd;
+            background: white;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .pagination-controls button:hover:not(:disabled) {
+            background: #2a5298;
+            color: white;
+            border-color: #2a5298;
+        }
+        
+        .pagination-controls button:disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+        
+        .page-numbers {
+            display: flex;
+            gap: 5px;
+            margin: 0 10px;
+        }
+        
+        .page-number {
+            padding: 6px 12px;
+            border: 1px solid #ddd;
+            background: white;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .page-number:hover {
+            background: #2a5298;
+            color: white;
+            border-color: #2a5298;
+        }
+        
+        .page-number.active {
+            background: #2a5298;
+            color: white;
+            border-color: #2a5298;
+        }
+        
+        .pagination-size {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .pagination-size label {
+            font-size: 14px;
+            color: #666;
+        }
+</style>
 </head>
 <body>
     <div class="container">
@@ -578,12 +666,124 @@
             <div id="history">
                 <p class="loading">加载历史记录中...</p>
             </div>
+            <!-- 分页控件 -->
+            <div id="pagination" class="pagination-container" style="display: none; margin-top: 20px;">
+                <div class="pagination-info">
+                    <span id="paginationInfo">显示 0-0 条，共 0 条</span>
+                </div>
+                <div class="pagination-controls">
+                    <button id="firstPageBtn" onclick="goToPage(1)" class="btn btn-sm btn-outline-primary" disabled>« 首页</button>
+                    <button id="prevPageBtn" onclick="goToPage(currentPage - 1)" class="btn btn-sm btn-outline-primary" disabled>‹ 上一页</button>
+                    <span id="pageNumbers" class="page-numbers"></span>
+                    <button id="nextPageBtn" onclick="goToPage(currentPage + 1)" class="btn btn-sm btn-outline-primary" disabled>下一页 ›</button>
+                    <button id="lastPageBtn" onclick="goToPage(totalPages)" class="btn btn-sm btn-outline-primary" disabled>末页 »</button>
+                </div>
+                <div class="pagination-size">
+                    <label for="pageSizeSelect">每页显示：</label>
+                    <select id="pageSizeSelect" onchange="changePageSize()" class="form-select form-select-sm" style="width: auto; display: inline-block;">
+                        <option value="5">5 条</option>
+                        <option value="10" selected>10 条</option>
+                        <option value="20">20 条</option>
+                        <option value="50">50 条</option>
+                    </select>
+                </div>
+            </div>
         </div>
     </div>
 
     <script>
         let isScanning = false;
         let currentOpenPorts = 0;
+        
+        // 分页相关变量
+        let currentPage = 1;
+        let totalPages = 1;
+        let currentPageSize = 10;
+        let totalCount = 0;
+        
+        // 分页函数：跳转到指定页
+        function goToPage(page) {
+            if (page < 1) page = 1;
+            if (page > totalPages) page = totalPages;
+            currentPage = page;
+            loadHistory();
+        }
+        
+        // 分页函数：改变每页显示数量
+        function changePageSize() {
+            const select = document.getElementById('pageSizeSelect');
+            currentPageSize = parseInt(select.value);
+            currentPage = 1;  // 重置到第一页
+            loadHistory();
+        }
+        
+        // 分页函数：更新分页控件
+        function updatePaginationControls() {
+            const pagination = document.getElementById('pagination');
+            const paginationInfo = document.getElementById('paginationInfo');
+            const pageNumbers = document.getElementById('pageNumbers');
+            const firstPageBtn = document.getElementById('firstPageBtn');
+            const prevPageBtn = document.getElementById('prevPageBtn');
+            const nextPageBtn = document.getElementById('nextPageBtn');
+            const lastPageBtn = document.getElementById('lastPageBtn');
+            const pageSizeSelect = document.getElementById('pageSizeSelect');
+            
+            // 显示/隐藏分页控件
+            if (totalCount === 0) {
+                pagination.style.display = 'none';
+                return;
+            }
+            pagination.style.display = 'flex';
+            
+            // 更新分页信息
+            const start = (currentPage - 1) * currentPageSize + 1;
+            const end = Math.min(currentPage * currentPageSize, totalCount);
+            paginationInfo.textContent = `显示 ${start}-${end} 条，共 ${totalCount} 条`;
+            
+            // 更新按钮状态
+            firstPageBtn.disabled = currentPage <= 1;
+            prevPageBtn.disabled = currentPage <= 1;
+            nextPageBtn.disabled = currentPage >= totalPages;
+            lastPageBtn.disabled = currentPage >= totalPages;
+            
+            // 更新每页显示数量选择
+            pageSizeSelect.value = currentPageSize;
+            
+            // 生成页码按钮
+            let pageNumbersHtml = '';
+            const maxVisiblePages = 5;
+            let startPage = Math.max(1, currentPage - Math.floor(maxVisiblePages / 2));
+            let endPage = Math.min(totalPages, startPage + maxVisiblePages - 1);
+            
+            // 调整起始页
+            if (endPage - startPage < maxVisiblePages - 1) {
+                startPage = Math.max(1, endPage - maxVisiblePages + 1);
+            }
+            
+            // 添加省略号和首页
+            if (startPage > 1) {
+                pageNumbersHtml += `<button class="page-number" onclick="goToPage(1)">1</button>`;
+                if (startPage > 2) {
+                    pageNumbersHtml += `<span style="padding: 6px 12px;">...</span>`;
+                }
+            }
+            
+            // 添加中间页码
+            for (let i = startPage; i <= endPage; i++) {
+                const activeClass = i === currentPage ? ' active' : '';
+                pageNumbersHtml += `<button class="page-number${activeClass}" onclick="goToPage(${i})">${i}</button>`;
+            }
+            
+            // 添加省略号和末页
+            if (endPage < totalPages) {
+                if (endPage < totalPages - 1) {
+                    pageNumbersHtml += `<span style="padding: 6px 12px;">...</span>`;
+                }
+                pageNumbersHtml += `<button class="page-number" onclick="goToPage(${totalPages})">${totalPages}</button>`;
+            }
+            
+            pageNumbers.innerHTML = pageNumbersHtml;
+        }
         
         // 扫描模式描述映射
         const modeDescriptions = {
@@ -763,6 +963,14 @@
             
             // 显示违规警告
             if (data.violation) {
+                // 销毁旧图表
+                if (window.statusChart && typeof window.statusChart.destroy === 'function') {
+                    window.statusChart.destroy();
+                }
+                if (window.riskChart && typeof window.riskChart.destroy === 'function') {
+                    window.riskChart.destroy();
+                }
+                document.getElementById('chartsContainer').style.display = 'none';
                 const violation = data.violation;
                 resultsDiv.innerHTML = `
                     <div class="violation-warning">
@@ -777,8 +985,16 @@
                 return;
             }
 
-            // 显示扫描结果
+            // 显示扫描结果（无结果时也要隐藏图表）
             if (!data.results || data.results.length === 0) {
+                // 销毁旧图表
+                if (window.statusChart && typeof window.statusChart.destroy === 'function') {
+                    window.statusChart.destroy();
+                }
+                if (window.riskChart && typeof window.riskChart.destroy === 'function') {
+                    window.riskChart.destroy();
+                }
+                document.getElementById('chartsContainer').style.display = 'none';
                 resultsDiv.innerHTML = '<p>未发现开放端口</p>';
                 return;
             }
@@ -923,9 +1139,18 @@
             // 初始化渲染（按端口升序）
             window.sortResults('port');
             
-            // 渲染图表
-            if (data.stats) {
+            // 渲染图表（扫描失败或无数据时隐藏）
+            if (data.stats && !data.violation && data.results && data.results.length > 0) {
                 renderCharts(data.stats, data.results);
+            } else {
+                // 销毁旧图表
+                if (window.statusChart && typeof window.statusChart.destroy === 'function') {
+                    window.statusChart.destroy();
+                }
+                if (window.riskChart && typeof window.riskChart.destroy === 'function') {
+                    window.riskChart.destroy();
+                }
+                document.getElementById('chartsContainer').style.display = 'none';
             }
             
             // 更新摘要信息
@@ -954,6 +1179,12 @@
                     const statusCtx = document.getElementById('statusChart');
                     if (!statusCtx) {
                         console.error('statusChart canvas not found');
+                        return;
+                    }
+                    
+                    // 检查 Chart.js 是否真正可用
+                    if (typeof window.Chart !== 'function') {
+                        console.warn('Chart.js not loaded, skipping chart rendering');
                         return;
                     }
                     
@@ -1053,7 +1284,10 @@
             try {
                 const response = await fetch('/api/results');
                 const data = await response.json();
-                console.log('loadResults received:', data);
+                console.log('loadResults received:', JSON.stringify(data, null, 2));
+                console.log('Results length:', data.results ? data.results.length : 0);
+                console.log('Stats:', JSON.stringify(data.stats));
+                console.log('Scan ID:', data.scan_id);
 
                 const resultsDiv = document.getElementById('results');
 
@@ -1128,9 +1362,18 @@
                 html += '</tbody></table>';
                 resultsDiv.innerHTML = html;
                 
-                // 渲染图表
-                if (data.stats) {
+                // 渲染图表（扫描失败时隐藏）
+                if (data.stats && data.status !== 'failed') {
                     renderCharts(data.stats, data.results);
+                } else {
+                    // 销毁旧图表
+                    if (window.statusChart && typeof window.statusChart.destroy === 'function') {
+                        window.statusChart.destroy();
+                    }
+                    if (window.riskChart && typeof window.riskChart.destroy === 'function') {
+                        window.riskChart.destroy();
+                    }
+                    document.getElementById('chartsContainer').style.display = 'none';
                 }
                 
                 // 更新摘要信息
@@ -1154,6 +1397,10 @@
                 
                 if (data.success) {
                     alert('历史记录已清空');
+                    // 重置分页信息
+                    currentPage = 1;
+                    totalPages = 1;
+                    totalCount = 0;
                     loadHistory();
                     loadStats();
                 } else {
@@ -1167,19 +1414,31 @@
         
         async function loadHistory() {
             try {
-                const response = await fetch('/api/history');
+                // 发送分页请求
+                const response = await fetch(`/api/history?page=${currentPage}&page_size=${currentPageSize}`);
                 const data = await response.json();
 
                 const historyDiv = document.getElementById('history');
 
                 if (!data.history || data.history.length === 0) {
                     historyDiv.innerHTML = '<p>暂无历史记录</p>';
+                    totalCount = 0;
+                    updatePaginationControls();
                     return;
+                }
+
+                // 更新分页信息
+                if (data.pagination) {
+                    totalCount = data.pagination.total_count;
+                    totalPages = data.pagination.total_pages;
+                    currentPage = data.pagination.page;
+                    currentPageSize = data.pagination.page_size;
                 }
 
                 let html = '';
                 
-                data.history.slice().reverse().forEach(h => {
+                // 数据已经按时间倒序排列，不需要再 reverse
+                data.history.forEach(h => {
                     const statusClass = h.status === 'completed' ? 'status-success' : 
                                        h.status === 'failed' ? 'status-failed' : 'status-pending';
                     html += `
@@ -1204,6 +1463,9 @@
                 });
 
                 historyDiv.innerHTML = html;
+                
+                // 更新分页控件
+                updatePaginationControls();
 
             } catch (error) {
                 console.error('Error loading history:', error);
@@ -1219,6 +1481,14 @@
                 const resultsDiv = document.getElementById('results');
                 
                 if (data.violation) {
+                    // 销毁旧图表
+                    if (window.statusChart && typeof window.statusChart.destroy === 'function') {
+                        window.statusChart.destroy();
+                    }
+                    if (window.riskChart && typeof window.riskChart.destroy === 'function') {
+                        window.riskChart.destroy();
+                    }
+                    document.getElementById('chartsContainer').style.display = 'none';
                     const violation = data.violation;
                     resultsDiv.innerHTML = `
                         <div class="violation-warning">
@@ -1230,6 +1500,18 @@
                         </div>
                     `;
                     return;
+                }
+                
+                // 扫描失败时隐藏图表
+                if (data.status === 'failed') {
+                    // 销毁旧图表
+                    if (window.statusChart && typeof window.statusChart.destroy === 'function') {
+                        window.statusChart.destroy();
+                    }
+                    if (window.riskChart && typeof window.riskChart.destroy === 'function') {
+                        window.riskChart.destroy();
+                    }
+                    document.getElementById('chartsContainer').style.display = 'none';
                 }
                 
                 displayResults(data);

@@ -70,6 +70,10 @@ class ScanService:
                 use_async=False
             )
 
+            self.logger.info(f"扫描结果数量: {len(results)}")
+            if results:
+                self.logger.info(f"第一个结果状态: {results[0].status if results else 'N/A'}")
+
             duration = self.performance_monitor.end_scan(scan_id)
 
             if not results:
@@ -179,39 +183,39 @@ class ScanService:
         """根据扫描模式返回对应的参数配置"""
         mode_configs = {
             'fast': {
-                'max_workers': 300,
-                'min_workers': 100,
-                'timeout': 0.5,
+                'max_workers': 500,      # 大幅增加线程数提升速度
+                'min_workers': 200,
+                'timeout': 0.3,          # 更短超时
                 'retry_count': 0,
-                'batch_size': 2000
+                'batch_size': 5000
             },
             'full': {
+                'max_workers': 300,      # 增加线程数
+                'min_workers': 100,
+                'timeout': 1.0,          # 缩短超时
+                'retry_count': 1,
+                'batch_size': 2000
+            },
+            'syn': {
                 'max_workers': 200,
                 'min_workers': 50,
                 'timeout': 1.5,
                 'retry_count': 1,
                 'batch_size': 1000
             },
-            'syn': {
-                'max_workers': 150,
-                'min_workers': 30,
-                'timeout': 2.0,
-                'retry_count': 1,
-                'batch_size': 500
-            },
             'udp': {
-                'max_workers': 100,
-                'min_workers': 20,
-                'timeout': 3.0,
-                'retry_count': 2,
-                'batch_size': 500
+                'max_workers': 150,      # UDP扫描较慢，适当增加线程
+                'min_workers': 30,
+                'timeout': 2.0,          # UDP超时较长是正常的
+                'retry_count': 1,        # 减少重试次数
+                'batch_size': 1000
             },
             'comprehensive': {
-                'max_workers': 100,
-                'min_workers': 30,
-                'timeout': 2.0,
+                'max_workers': 400,      # 综合模式使用较高线程数
+                'min_workers': 150,
+                'timeout': 1.2,
                 'retry_count': 1,
-                'batch_size': 2000
+                'batch_size': 3000
             }
         }
         return mode_configs.get(scan_mode, mode_configs['full'])

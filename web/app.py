@@ -8,8 +8,6 @@ from typing import Dict, Any, List
 # 全局变量用于跟踪扫描进度
 scan_progress_data = {}
 progress_lock = threading.Lock()
-is_scanning = False  # 扫描状态标志
-scan_lock = threading.Lock()  # 扫描锁，防止重复扫描
 
 import sys
 from pathlib import Path
@@ -270,18 +268,37 @@ def get_scan_results(scan_id: str):
 
 @app.route('/api/history')
 def get_history():
+    # 获取分页参数
+    page = request.args.get('page', 1, type=int)
+    page_size = request.args.get('page_size', 10, type=int)
+    
+    # 限制每页最大数量
+    if page_size > 50:
+        page_size = 50
+    if page_size < 1:
+        page_size = 10
+    if page < 1:
+        page = 1
+    
+    # 计算偏移量
+    offset = (page - 1) * page_size
+    
     # 优先从MySQL读取历史记录（数据库记录更准确）
     if db_service.mysql_available:
-        db_records = db_service.get_all_records(limit=50)
+        # 获取分页记录
+        db_records = db_service.get_all_records(limit=page_size, offset=offset)
+        # 获取总数
+        total_count = db_service.get_total_count()
+        
         if db_records:
             # 转换数据库记录格式，添加必要字段
             history_data = []
             for record in db_records:
                 # 安全解析 results 字段
-                results = []
-                if record.get('results'):
+                results = record.get('results', [])
+                if isinstance(results, str):
                     try:
-                        parsed = json.loads(record['results'])
+                        parsed = json.loads(results)
                         if isinstance(parsed, list):
                             results = parsed
                     except:
@@ -294,16 +311,44 @@ def get_history():
                     'ports': record['ports'],
                     'mode': record['mode'],
                     'status': record['status'],
-                    'open_ports': len(results),
+                    'open_ports': len(results) if isinstance(results, list) else 0,
                     'duration': record.get('scan_duration', 0)
                 })
-            return jsonify({'history': history_data})
+            
+            return jsonify({
+                'history': history_data,
+                'pagination': {
+                    'page': page,
+                    'page_size': page_size,
+                    'total_count': total_count,
+                    'total_pages': (total_count + page_size - 1) // page_size
+                }
+            })
+        else:
+            # 没有记录也返回分页信息
+            return jsonify({
+                'history': [],
+                'pagination': {
+                    'page': page,
+                    'page_size': page_size,
+                    'total_count': total_count,
+                    'total_pages': (total_count + page_size - 1) // page_size
+                }
+            })
     
-    # 如果MySQL不可用，回退到内存历史
+    # 如果MySQL不可用，回退到内存历史（不支持分页）
     with history_lock:
         history_data = scan_history[-50:]
     
-    return jsonify({'history': history_data})
+    return jsonify({
+        'history': history_data,
+        'pagination': {
+            'page': 1,
+            'page_size': 50,
+            'total_count': len(history_data),
+            'total_pages': 1
+        }
+    })
 
 
 @app.route('/api/history/clear', methods=['DELETE'])
@@ -397,22 +442,15 @@ def export_results():
 
 @app.route('/api/scan/progress')
 def scan_progress():
-    global is_scanning
-    
     ip = request.args.get('ip')
     ports = request.args.get('ports')
     scan_mode = request.args.get('mode', 'full')
     request_id = f"{ip}_{ports}_{scan_mode}_{datetime.now().timestamp()}"
     
     def generate():
-        global is_scanning
         # 异步执行扫描
         def do_scan():
             nonlocal request_id
-            # 设置扫描状态
-            with scan_lock:
-                is_scanning = True
-            
             try:
                 def progress_callback(completed, total, open_count=0):
                     with progress_lock:
@@ -499,10 +537,6 @@ def scan_progress():
                         'scan_id': final_scan_id,
                         'success': result.get('success', False)
                     }
-                
-                # 扫描完成，重置扫描标志
-                with scan_lock:
-                    is_scanning = False
                     
             except Exception as e:
                 with progress_lock:
@@ -514,12 +548,9 @@ def scan_progress():
                         'status': 'error',
                         'error': str(e)
                     }
-                
-                # 扫描出错，重置扫描标志
-                with scan_lock:
-                    is_scanning = False
         
         scan_thread = threading.Thread(target=do_scan)
+        scan_thread.daemon = True  # 设置为守护线程，主线程退出时自动终止
         scan_thread.start()
         
         # 增加超时时间，最多等待300秒（5分钟）
@@ -566,4 +597,5 @@ def scan_progress():
 
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # 启用多线程模式，支持并发请求
+    app.run(debug=True, host='0.0.0.0', port=5000, threaded=True)

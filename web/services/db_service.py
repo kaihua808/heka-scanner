@@ -114,6 +114,14 @@ class DatabaseService:
         db.commit()
         return True
     
+    def get_total_count(self):
+        """获取历史记录总数"""
+        if not self.mysql_available:
+            return 0
+        
+        db = next(get_db())
+        return db.query(ScanRecord).count()
+    
     def clear_all_records(self):
         if not self.mysql_available:
             return False
