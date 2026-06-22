@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean
+from sqlalchemy import Column, Integer, String, DateTime, Text, Boolean, ForeignKey
 from sqlalchemy.dialects.mysql import LONGTEXT
+from sqlalchemy.orm import relationship
 from web.config.database import Base
 from datetime import datetime
 
@@ -7,6 +8,7 @@ class ScanRecord(Base):
     __tablename__ = 'scan_records'
     
     id = Column(Integer, primary_key=True, autoincrement=True)
+    user_id = Column(Integer, ForeignKey('users.id'))  # 添加用户ID字段
     target = Column(String(255), nullable=False)
     ports = Column(String(255), nullable=False)
     mode = Column(String(50), default='full')
@@ -16,10 +18,14 @@ class ScanRecord(Base):
     created_at = Column(DateTime, default=datetime.now)
     completed_at = Column(DateTime)
     scan_duration = Column(Integer)
+    
+    # 关联用户
+    user = relationship('User', backref='scan_records')
 
     def to_dict(self):
         return {
             'id': self.id,
+            'user_id': self.user_id,
             'target': self.target,
             'ports': self.ports,
             'mode': self.mode,

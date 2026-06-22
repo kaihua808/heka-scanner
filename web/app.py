@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, jsonify, Response
+from flask import Flask, render_template, request, jsonify, Response, session
 import threading
 import json
 import time
@@ -20,6 +20,9 @@ app = Flask(__name__,
             template_folder='../templates',
             static_folder='../static')
 
+# 设置会话密钥
+app.secret_key = 'your-secret-key-here-change-in-production'
+
 scan_service = ScanService()
 
 # 使用更持久的存储方式
@@ -40,6 +43,85 @@ def index():
     return render_template('index.html')
 
 
+# ============ 用户登录相关 API ============
+
+@app.route('/api/register', methods=['POST'])
+def register():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    email = data.get('email', '')
+    
+    if not username or not password:
+        return jsonify({'success': False, 'message': '用户名和密码不能为空'}), 400
+    
+    if len(password) < 6:
+        return jsonify({'success': False, 'message': '密码长度至少为6位'}), 400
+    
+    user_id = db_service.create_user(username, password, email)
+    
+    if user_id:
+        return jsonify({'success': True, 'message': '注册成功', 'user_id': user_id})
+    else:
+        return jsonify({'success': False, 'message': '用户名或邮箱已存在'}), 400
+
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    username = data.get('username')
+    password = data.get('password')
+    
+    if not username or not password:
+        return jsonify({'success': False, 'message': '用户名和密码不能为空'}), 400
+    
+    user = db_service.get_user_by_username(username)
+    
+    if user and user.verify_password(password):
+        # 更新最后登录时间
+        db_service.update_user_last_login(user.id)
+        
+        # 设置会话
+        session['user_id'] = user.id
+        session['username'] = user.username
+        
+        return jsonify({
+            'success': True, 
+            'message': '登录成功',
+            'user': {
+                'id': user.id,
+                'username': user.username,
+                'email': user.email,
+                'is_admin': user.is_admin
+            }
+        })
+    else:
+        return jsonify({'success': False, 'message': '用户名或密码错误'}), 401
+
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    session.clear()
+    return jsonify({'success': True, 'message': '退出成功'})
+
+
+@app.route('/api/user', methods=['GET'])
+def get_current_user():
+    if 'user_id' in session:
+        user = db_service.get_user_by_id(session['user_id'])
+        if user:
+            return jsonify({
+                'success': True,
+                'user': {
+                    'id': user.id,
+                    'username': user.username,
+                    'email': user.email,
+                    'is_admin': user.is_admin
+                }
+            })
+    return jsonify({'success': False, 'message': '未登录'})
+
+
 @app.route('/api/scan', methods=['POST'])
 def start_scan():
     data = request.get_json()
@@ -50,6 +132,9 @@ def start_scan():
 
     if not ip_or_cidr:
         return jsonify({'error': 'IP地址不能为空'}), 400
+    
+    # 获取当前登录用户ID
+    user_id = session.get('user_id')
 
     # 同步执行扫描（不使用异步，确保稳定）
     try:
@@ -68,7 +153,7 @@ def start_scan():
         db_record_id = None
         if db_service.mysql_available:
             try:
-                db_record_id = db_service.save_scan_record(ip_or_cidr, port_str, scan_mode)
+                db_record_id = db_service.save_scan_record(ip_or_cidr, port_str, scan_mode, user_id)
                 if db_record_id:
                     db_service.update_scan_status(
                         db_record_id,
@@ -135,7 +220,7 @@ def start_scan():
         violation = scan_service.get_last_violation()
         return jsonify({
             'status': 'failed',
-            'scan_id': scan_id,
+            'scan_id': error_scan_id,
             'message': str(e),
             'results': [],
             'stats': {},
@@ -312,7 +397,8 @@ def get_history():
                     'mode': record['mode'],
                     'status': record['status'],
                     'open_ports': len(results) if isinstance(results, list) else 0,
-                    'duration': record.get('scan_duration', 0)
+                    'duration': record.get('scan_duration', 0),
+                    'username': record.get('username', '未知用户')
                 })
             
             return jsonify({
@@ -447,6 +533,9 @@ def scan_progress():
     scan_mode = request.args.get('mode', 'full')
     request_id = f"{ip}_{ports}_{scan_mode}_{datetime.now().timestamp()}"
     
+    # 获取当前登录用户ID
+    user_id = session.get('user_id')
+    
     def generate():
         # 异步执行扫描
         def do_scan():
@@ -474,8 +563,8 @@ def scan_progress():
                 if db_service.mysql_available:
                     # 单独处理每个数据库操作，确保状态总是被更新
                     try:
-                        print(f"[DEBUG] Saving scan record to MySQL: ip={ip}, ports={ports}, mode={scan_mode}")
-                        db_record_id = db_service.save_scan_record(ip, ports, scan_mode)
+                        print(f"[DEBUG] Saving scan record to MySQL: ip={ip}, ports={ports}, mode={scan_mode}, user_id={user_id}")
+                        db_record_id = db_service.save_scan_record(ip, ports, scan_mode, user_id)
                         print(f"[DEBUG] Got record ID: {db_record_id}")
                     except Exception as e:
                         print(f"[ERROR] save_scan_record failed: {e}")

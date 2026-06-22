@@ -1389,6 +1389,146 @@
       "open_ports": 4,
       "threads_used": 200,
       "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-13T15:47:26.720148",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 2.095130443572998,
+      "open_ports": 4,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-13T16:35:51.671915",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 30.13954210281372,
+      "open_ports": 0,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-13T16:37:00.538633",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 2.0937910079956055,
+      "open_ports": 4,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-13T16:38:48.184764",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 7.612650394439697,
+      "open_ports": 4,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-13T17:00:11.234824",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 2.0929317474365234,
+      "open_ports": 0,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-13T17:00:15.966706",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 7.62003231048584,
+      "open_ports": 4,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-13T17:45:31.464437",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 7.598926782608032,
+      "open_ports": 4,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-13T18:42:48.667679",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 4.1070568561553955,
+      "open_ports": 0,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-13T18:43:25.982095",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 0.7797496318817139,
+      "open_ports": 0,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-13T18:43:41.210336",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 7.617178440093994,
+      "open_ports": 0,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-22T13:55:07.902484",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 3.7006900310516357,
+      "open_ports": 4,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-22T19:52:08.039834",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 4.089954614639282,
+      "open_ports": 4,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-22T19:55:49.459861",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 0.8041799068450928,
+      "open_ports": 4,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
+    },
+    {
+      "timestamp": "2026-06-22T20:06:57.289106",
+      "scan_type": "default",
+      "ip_count": 1,
+      "port_count": 1000,
+      "duration": 4.08932089805603,
+      "open_ports": 4,
+      "threads_used": 200,
+      "bandwidth_avg": 0.0
     }
   ],
   "baselines": {
@@ -1396,12 +1536,12 @@
       "scan_type": "default",
       "port_count": 1000,
       "ip_count": 1,
-      "avg_duration": 7.523021219222526,
+      "avg_duration": 7.370603979068951,
       "min_duration": 0.0,
-      "max_duration": 20.4163498878479,
-      "std_deviation": 2.8998325373995875,
-      "sample_count": 123,
-      "last_updated": "2026-06-12T16:07:44.644597"
+      "max_duration": 30.13954210281372,
+      "std_deviation": 3.6006046978185777,
+      "sample_count": 137,
+      "last_updated": "2026-06-22T20:06:57.289106"
     },
     "default_1_1001": {
       "scan_type": "default",
@@ -1426,5 +1566,5 @@
       "last_updated": "2026-06-03T20:51:53.518250"
     }
   },
-  "last_updated": "2026-06-12T16:07:44.645751"
+  "last_updated": "2026-06-22T20:06:57.289106"
 }

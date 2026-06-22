@@ -1,5 +1,8 @@
 import pymysql
 from web.config.database import MYSQL_CONFIG, Base, engine
+from web.models.user import User
+from web.models.scan_record import ScanRecord
+from web.models.scan_result import ScanResult
 
 def create_database():
     try:
