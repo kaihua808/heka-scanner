@@ -267,7 +267,7 @@ class BlackWhiteList:
         self._consecutive_failures: Dict[str, int] = defaultdict(int)
         self._offline_threshold = 3
 
-        self._lock = threading.Lock()
+        self._lock = threading.RLock()
 
     def is_blacklisted(self, ip: str, port: Optional[int] = None) -> bool:
         with self._lock:
