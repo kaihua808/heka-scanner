@@ -1,5 +1,7 @@
 import csv
 import json
+import os
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -40,8 +42,25 @@ MODE_LABELS = {
 }
 
 
+def format_duration(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    minutes, seconds = divmod(seconds, 60)
+    hours, minutes = divmod(minutes, 60)
+    if hours:
+        return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes:02d}:{seconds:02d}"
+
+
+def get_progress_delay_ms() -> int:
+    try:
+        delay = int(os.getenv("HEKA_PROGRESS_DELAY_MS", "0"))
+    except ValueError:
+        return 0
+    return max(0, min(delay, 1000))
+
+
 class ScanWorker(QThread):
-    progress_changed = Signal(int, int, int)
+    progress_changed = Signal(int, int, int, str, str)
     scan_finished = Signal(dict)
 
     def __init__(self, target: str, ports: str, mode: str, parent=None):
@@ -50,11 +69,26 @@ class ScanWorker(QThread):
         self.ports = ports
         self.mode = mode
         self.service = ScanService()
+        self.start_time = None
+        self.progress_delay_ms = get_progress_delay_ms()
 
     def run(self):
         def report_progress(completed: int, total: int, open_count: int = 0):
-            self.progress_changed.emit(completed, total, open_count)
+            elapsed_seconds = time.time() - self.start_time if self.start_time else 0
+            elapsed = format_duration(elapsed_seconds)
 
+            if completed <= 0:
+                eta = "计算中"
+            else:
+                average_speed = completed / elapsed_seconds if elapsed_seconds > 0 else 0
+                remaining = max(total - completed, 0)
+                eta = format_duration(remaining / average_speed) if average_speed > 0 else "计算中"
+
+            self.progress_changed.emit(completed, total, open_count, elapsed, eta)
+            if self.progress_delay_ms and completed > 0:
+                time.sleep(self.progress_delay_ms / 1000)
+
+        self.start_time = time.time()
         result = self.service.scan(
             ip_or_cidr=self.target,
             port_str=self.ports,
@@ -442,7 +476,7 @@ class MainWindow(QMainWindow):
         self.scan_button.setEnabled(False)
         self.scan_button.setText("扫描中...")
         self.progress_bar.setValue(0)
-        self.status_label.setText("正在扫描")
+        self.status_label.setText("扫描中 0/0 | 0% | 已耗时 00:00 | ETA 计算中")
         self.log_output.appendPlainText(f"[{datetime.now().strftime('%H:%M:%S')}] 开始扫描 {target} 端口 {ports}")
 
         self.worker = ScanWorker(target, ports, mode, self)
@@ -450,10 +484,12 @@ class MainWindow(QMainWindow):
         self.worker.scan_finished.connect(self.finish_scan)
         self.worker.start()
 
-    def update_progress(self, completed: int, total: int, open_count: int):
+    def update_progress(self, completed: int, total: int, open_count: int, elapsed: str, eta: str):
         percent = int((completed / total) * 100) if total else 0
         self.progress_bar.setValue(percent)
-        self.status_label.setText(f"扫描中 {completed}/{total} | 开放 {open_count}")
+        self.status_label.setText(
+            f"扫描中 {completed}/{total} | {percent}% | 已耗时 {elapsed} | ETA {eta} | 开放 {open_count}"
+        )
 
     def finish_scan(self, result: dict):
         self.current_result = result
@@ -467,7 +503,11 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(100 if result.get("success") else 0)
 
         if result.get("success"):
-            self.status_label.setText("扫描完成")
+            stats = result.get("stats", {})
+            total = stats.get("total", len(result.get("results", [])))
+            self.status_label.setText(
+                f"扫描完成 {total}/{total} | 100% | 已耗时 {format_duration(result.get('duration', 0))} | ETA 已完成"
+            )
             self.log_output.appendPlainText(
                 f"[{datetime.now().strftime('%H:%M:%S')}] 扫描完成，结果 {len(result.get('results', []))} 条"
             )

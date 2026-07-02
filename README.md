@@ -58,6 +58,28 @@ python3 -m venv .venv
 
 如果误输入 `127001`，桌面界面会自动归一化为 `127.0.0.1`。
 
+### 演示已耗时和 ETA
+
+本机扫描可能很快完成，开发演示时可以通过环境变量放慢进度更新，方便观察“已耗时”和“ETA”。默认值为 `0`，正常运行不会延迟。
+
+```bash
+HEKA_PROGRESS_DELAY_MS=100 .venv/bin/python run_desktop.py
+```
+
+PyCharm 运行时，可以在 `Run/Debug Configurations` 的 `Environment variables` 中添加：
+
+```text
+HEKA_PROGRESS_DELAY_MS=100
+```
+
+建议演示输入：
+
+```text
+目标: 127.0.0.1
+端口: 1-100
+模式: 快速扫描
+```
+
 ## 命令行用法
 
 桌面版之外，也可以继续使用命令行入口：
