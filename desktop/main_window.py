@@ -30,8 +30,15 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.ip_validator import IPValidator
+from core.port_parser import PortParser
 from services import ScanService
 
+
+HIGH_RISK_PORTS = {22, 23, 135, 139, 445, 3306, 3389, 6379, 9200}
+LARGE_TARGET_LIMIT = 20
+LARGE_PORT_LIMIT = 100
+LARGE_TASK_LIMIT = 500
 
 MODE_LABELS = {
     "fast": "快速扫描",
@@ -71,6 +78,11 @@ class ScanWorker(QThread):
         self.service = ScanService()
         self.start_time = None
         self.progress_delay_ms = get_progress_delay_ms()
+        self.stop_requested = False
+
+    def request_stop(self):
+        self.stop_requested = True
+        self.service.stop_scan()
 
     def run(self):
         def report_progress(completed: int, total: int, open_count: int = 0):
@@ -85,7 +97,7 @@ class ScanWorker(QThread):
                 eta = format_duration(remaining / average_speed) if average_speed > 0 else "计算中"
 
             self.progress_changed.emit(completed, total, open_count, elapsed, eta)
-            if self.progress_delay_ms and completed > 0:
+            if self.progress_delay_ms and completed > 0 and not self.stop_requested:
                 time.sleep(self.progress_delay_ms / 1000)
 
         def report_result(row: dict):
@@ -184,6 +196,10 @@ class MainWindow(QMainWindow):
         self.scan_button = QPushButton("开始扫描")
         self.scan_button.clicked.connect(self.start_scan)
 
+        self.stop_button = QPushButton("停止扫描")
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.stop_scan)
+
         self.clear_button = QPushButton("清空结果")
         self.clear_button.clicked.connect(self.clear_results)
 
@@ -194,7 +210,8 @@ class MainWindow(QMainWindow):
         input_layout.addWidget(QLabel("扫描模式"), 1, 0)
         input_layout.addWidget(self.mode_combo, 1, 1)
         input_layout.addWidget(self.scan_button, 1, 2)
-        input_layout.addWidget(self.clear_button, 1, 3)
+        input_layout.addWidget(self.stop_button, 1, 3)
+        input_layout.addWidget(self.clear_button, 2, 3)
         input_layout.setColumnStretch(1, 2)
         input_layout.setColumnStretch(3, 2)
         layout.addWidget(input_box)
@@ -476,9 +493,19 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "输入错误", "目标 IP / CIDR 不能为空")
             return
 
+        scan_plan = self.build_scan_plan(target, ports)
+        if not scan_plan:
+            return
+
+        if self.requires_scan_confirmation(scan_plan):
+            if not self.confirm_risky_scan(scan_plan):
+                self.log_output.appendPlainText(f"[{datetime.now().strftime('%H:%M:%S')}] 用户取消了扫描")
+                return
+
         self.target_input.setText(target)
         self.scan_button.setEnabled(False)
         self.scan_button.setText("扫描中...")
+        self.stop_button.setEnabled(True)
         self.results_table.setRowCount(0)
         self.progress_bar.setValue(0)
         self.status_label.setText("扫描中 0/0 | 0% | 已耗时 00:00 | ETA 计算中")
@@ -489,6 +516,60 @@ class MainWindow(QMainWindow):
         self.worker.result_signal.connect(self.append_result_row)
         self.worker.scan_finished.connect(self.finish_scan)
         self.worker.start()
+
+    def stop_scan(self):
+        if not self.worker or not self.worker.isRunning():
+            return
+
+        self.stop_button.setEnabled(False)
+        self.status_label.setText("扫描已停止")
+        self.log_output.appendPlainText(f"[{datetime.now().strftime('%H:%M:%S')}] 用户已请求停止扫描")
+        self.worker.request_stop()
+
+    def build_scan_plan(self, target: str, ports: str):
+        try:
+            ip_list = IPValidator().validate(target)
+            port_list = PortParser().parse(ports)
+        except Exception as exc:
+            reason = str(exc)
+            self.log_output.appendPlainText(f"[{datetime.now().strftime('%H:%M:%S')}] 扫描参数校验失败: {reason}")
+            QMessageBox.warning(self, "扫描参数错误", reason)
+            return None
+
+        risky_ports = sorted(set(port_list) & HIGH_RISK_PORTS)
+        return {
+            "target_count": len(ip_list),
+            "port_count": len(port_list),
+            "task_count": len(ip_list) * len(port_list),
+            "risky_ports": risky_ports,
+        }
+
+    def requires_scan_confirmation(self, scan_plan: dict) -> bool:
+        return (
+            scan_plan["target_count"] > LARGE_TARGET_LIMIT
+            or scan_plan["port_count"] > LARGE_PORT_LIMIT
+            or scan_plan["task_count"] > LARGE_TASK_LIMIT
+            or bool(scan_plan["risky_ports"])
+        )
+
+    def confirm_risky_scan(self, scan_plan: dict) -> bool:
+        risky_ports = ", ".join(str(port) for port in scan_plan["risky_ports"]) or "无"
+        message = (
+            "本次扫描触发二次确认。\n\n"
+            f"目标数量: {scan_plan['target_count']}\n"
+            f"端口数量: {scan_plan['port_count']}\n"
+            f"总扫描任务数: {scan_plan['task_count']}\n"
+            f"命中的高危端口: {risky_ports}\n\n"
+            "请确认仅在本地、合法靶场或已授权环境中使用。"
+        )
+        reply = QMessageBox.question(
+            self,
+            "确认开始扫描",
+            message,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        return reply == QMessageBox.StandardButton.Yes
 
     def update_progress(self, completed: int, total: int, open_count: int, elapsed: str, eta: str):
         percent = int((completed / total) * 100) if total else 0
@@ -506,9 +587,16 @@ class MainWindow(QMainWindow):
 
         self.scan_button.setEnabled(True)
         self.scan_button.setText("开始扫描")
-        self.progress_bar.setValue(100 if result.get("success") else 0)
+        self.stop_button.setEnabled(False)
+        if not result.get("stopped"):
+            self.progress_bar.setValue(100 if result.get("success") else 0)
 
-        if result.get("success"):
+        if result.get("success") and result.get("stopped"):
+            self.status_label.setText("扫描已停止")
+            self.log_output.appendPlainText(
+                f"[{datetime.now().strftime('%H:%M:%S')}] 扫描已停止，保留 {len(result.get('results', []))} 条结果"
+            )
+        elif result.get("success"):
             stats = result.get("stats", {})
             total = stats.get("total", len(result.get("results", [])))
             self.status_label.setText(
@@ -741,6 +829,7 @@ class MainWindow(QMainWindow):
         self.results_table.setRowCount(0)
         self.current_result = None
         self.progress_bar.setValue(0)
+        self.stop_button.setEnabled(False)
         self.status_label.setText("准备就绪")
         self.summary_label.setText("总数: 0 | 开放: 0 | 关闭: 0 | 过滤: 0 | 开放或过滤: 0 | 未知: 0 | 耗时: 0.00s")
 

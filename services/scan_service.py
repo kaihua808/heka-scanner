@@ -25,6 +25,7 @@ class ScanService:
         self.sla_reporter = SLAReporter()
         self.bandwidth_monitor: Optional[BandwidthMonitor] = None
         self.fault_tolerance: Optional[FaultToleranceManager] = None
+        self.current_scheduler: Optional[TaskScheduler] = None
 
     def scan(self, ip_or_cidr: str, port_str: str = "1-1000",
              scan_mode: str = "full",
@@ -53,6 +54,7 @@ class ScanService:
                 batch_size=mode_params["batch_size"]
             )
             scheduler = TaskScheduler(scheduler_config)
+            self.current_scheduler = scheduler
 
             scan_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             self.performance_monitor.start_scan(scan_id)
@@ -71,6 +73,8 @@ class ScanService:
             )
 
             duration = self.performance_monitor.end_scan(scan_id)
+            stopped = scheduler.was_stopped()
+            self.current_scheduler = None
 
             self.logger.info(f"扫描结果数量: {len(results)}")
             if results:
@@ -82,7 +86,8 @@ class ScanService:
                     "scan_id": scan_id,
                     "duration": duration,
                     "results": [],
-                    "stats": self._generate_stats(results, duration)
+                    "stats": self._generate_stats(results, duration),
+                    "stopped": stopped
                 }
 
             self.audit_logger.log_scan_complete(ips, port_str, results, duration)
@@ -101,12 +106,18 @@ class ScanService:
                 "duration": duration,
                 "results": [self._result_to_dict(r) for r in results],
                 "stats": self._generate_stats(results, duration),
-                "sla": self._generate_sla_info(len(ips), len(ports), duration)
+                "sla": self._generate_sla_info(len(ips), len(ports), duration),
+                "stopped": stopped
             }
 
         except Exception as e:
+            self.current_scheduler = None
             self.logger.error(f"扫描异常: {e}")
             return {"success": False, "error": str(e)}
+
+    def stop_scan(self) -> None:
+        if self.current_scheduler:
+            self.current_scheduler.stop()
 
     def _validate_inputs(self, ip_or_cidr: str) -> List[str]:
         try:

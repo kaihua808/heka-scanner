@@ -40,6 +40,7 @@ class TaskScheduler:
         self._results: List[PortResult] = []
         self._is_running = False
         self._stop_flag = threading.Event()
+        self._was_stopped = False
         self._thread_health: Dict[int, float] = {}
         self._thread_lock_status: Dict[int, bool] = {}
 
@@ -65,6 +66,7 @@ class TaskScheduler:
 
         self._results.clear()
         self._is_running = True
+        self._was_stopped = False
         self._stop_flag.clear()
 
         tasks = self._create_tasks(targets, ports)
@@ -86,6 +88,7 @@ class TaskScheduler:
             completed = 0
             for future in concurrent.futures.as_completed(future_to_task):
                 if self._stop_flag.is_set():
+                    self._was_stopped = True
                     executor.shutdown(wait=False, cancel_futures=True)
                     break
 
@@ -173,6 +176,9 @@ class TaskScheduler:
     def _scan_task(self, task: tuple, scan_protocol: str = "tcp") -> Optional[PortResult]:
         ip, port = task
 
+        if self._stop_flag.is_set():
+            return None
+
         thread_id = threading.current_thread().ident
         self._update_thread_health(thread_id)
 
@@ -206,10 +212,14 @@ class TaskScheduler:
     def stop(self) -> None:
         self.logger.info("停止扫描")
         self._stop_flag.set()
+        self._was_stopped = True
         self._is_running = False
 
     def is_running(self) -> bool:
         return self._is_running
+
+    def was_stopped(self) -> bool:
+        return self._was_stopped
 
     def get_results(self) -> List[PortResult]:
         with self._lock:
