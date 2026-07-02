@@ -46,15 +46,19 @@ class TaskScheduler:
     def scan(self, targets: List[str], ports: List[int],
              progress_callback: Optional[Callable] = None,
              thread_count: Optional[int] = None,
-             use_async: bool = False) -> List[PortResult]:
+             use_async: bool = False,
+             result_callback: Optional[Callable] = None,
+             scan_protocol: str = "tcp") -> List[PortResult]:
         if use_async:
             return self._scan_async(targets, ports, progress_callback)
         else:
-            return self._scan_sync(targets, ports, progress_callback, thread_count)
+            return self._scan_sync(targets, ports, progress_callback, thread_count, result_callback, scan_protocol)
 
     def _scan_sync(self, targets: List[str], ports: List[int],
                    progress_callback: Optional[Callable] = None,
-                   thread_count: Optional[int] = None) -> List[PortResult]:
+                   thread_count: Optional[int] = None,
+                   result_callback: Optional[Callable] = None,
+                   scan_protocol: str = "tcp") -> List[PortResult]:
         workers = thread_count or self.config.max_workers
         workers = min(workers, self.config.max_workers)
         workers = max(workers, self.config.min_workers)
@@ -66,7 +70,7 @@ class TaskScheduler:
         tasks = self._create_tasks(targets, ports)
         total_tasks = len(tasks)
 
-        self.logger.info(f"开始扫描(同步): {len(targets)}个IP, {len(ports)}个端口, {total_tasks}个任务, {workers}个工作线程")
+        self.logger.info(f"开始扫描({scan_protocol}同步): {len(targets)}个IP, {len(ports)}个端口, {total_tasks}个任务, {workers}个工作线程")
 
         start_time = time.time()
 
@@ -75,7 +79,7 @@ class TaskScheduler:
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as executor:
             future_to_task = {
-                executor.submit(self._scan_task, task): task
+                executor.submit(self._scan_task, task, scan_protocol): task
                 for task in tasks
             }
 
@@ -93,6 +97,9 @@ class TaskScheduler:
                             self._results.append(result)
                         completed += 1
 
+                    if result_callback and result:
+                        result_callback(result)
+
                     if progress_callback:
                         # 计算当前开放端口数量
                         open_count = sum(1 for r in self._results if r.status == PortStatus.OPEN)
@@ -108,7 +115,7 @@ class TaskScheduler:
         self._is_running = False
         elapsed = time.time() - start_time
 
-        self.logger.info(f"扫描完成(同步): {len(self._results)}个结果, 耗时:{elapsed:.2f}秒")
+        self.logger.info(f"扫描完成({scan_protocol}同步): {len(self._results)}个结果, 耗时:{elapsed:.2f}秒")
 
         return self._results
 
@@ -163,14 +170,17 @@ class TaskScheduler:
                 tasks.append((target, port))
         return tasks
 
-    def _scan_task(self, task: tuple) -> Optional[PortResult]:
+    def _scan_task(self, task: tuple, scan_protocol: str = "tcp") -> Optional[PortResult]:
         ip, port = task
 
         thread_id = threading.current_thread().ident
         self._update_thread_health(thread_id)
 
         try:
-            result = self.scanner.scan(ip, port)
+            if scan_protocol == "udp":
+                result = self.scanner.scan_udp(ip, port)
+            else:
+                result = self.scanner.scan(ip, port)
 
             result.service = self.service_detector.detect(port)
 
@@ -184,7 +194,9 @@ class TaskScheduler:
                 ip=ip,
                 port=port,
                 status=PortStatus.UNKNOWN,
-                error_message=str(e)
+                error_message=str(e),
+                protocol=scan_protocol,
+                scan_type="udp" if scan_protocol == "udp" else "tcp_connect"
             )
 
     def _update_thread_health(self, thread_id: int) -> None:

@@ -1,3 +1,4 @@
+import errno
 import socket
 import time
 from dataclasses import dataclass
@@ -11,6 +12,7 @@ class PortStatus(Enum):
     OPEN = "open"
     CLOSED = "closed"
     FILTERED = "filtered"
+    OPEN_OR_FILTERED = "open_or_filtered"
     UNKNOWN = "unknown"
 
     def __str__(self):
@@ -29,6 +31,8 @@ class PortResult:
     response_time_ms: float = 0.0
     retry_count: int = 0
     error_message: str = ""
+    protocol: str = "tcp"
+    scan_type: str = "tcp_connect"
 
     def to_dict(self) -> dict:
         return {
@@ -38,7 +42,9 @@ class PortResult:
             'service': self.service,
             'response_time_ms': self.response_time_ms,
             'retry_count': self.retry_count,
-            'error_message': self.error_message
+            'error_message': self.error_message,
+            'protocol': self.protocol,
+            'scan_type': self.scan_type
         }
 
 
@@ -62,7 +68,9 @@ class PortScanner:
                     port=port,
                     status=status,
                     response_time_ms=response_time,
-                    retry_count=retry
+                    retry_count=retry,
+                    protocol="tcp",
+                    scan_type="tcp_connect"
                 )
                 return result
 
@@ -89,8 +97,119 @@ class PortScanner:
             status=PortStatus.UNKNOWN,
             response_time_ms=(time.time() - start_time) * 1000,
             retry_count=retry,
-            error_message=last_error
+            error_message=last_error,
+            protocol="tcp",
+            scan_type="tcp_connect"
         )
+
+    def scan_udp(self, ip: str, port: int) -> PortResult:
+        start_time = time.time()
+        retry = 0
+        last_error = ""
+
+        while retry <= self.retry_count:
+            try:
+                status, response_time, error_message = self._scan_udp_single(ip, port)
+                return PortResult(
+                    ip=ip,
+                    port=port,
+                    status=status,
+                    response_time_ms=response_time,
+                    retry_count=retry,
+                    error_message=error_message,
+                    protocol="udp",
+                    scan_type="udp"
+                )
+
+            except socket.timeout:
+                retry += 1
+                last_error = "UDP未收到响应"
+                if retry > self.retry_count:
+                    self.logger.debug(f"{ip}:{port}/udp - 重试{retry-1}次后未收到响应")
+
+            except ConnectionRefusedError as e:
+                return PortResult(
+                    ip=ip,
+                    port=port,
+                    status=PortStatus.CLOSED,
+                    response_time_ms=(time.time() - start_time) * 1000,
+                    retry_count=retry,
+                    error_message=f"UDP端口不可达: {e}",
+                    protocol="udp",
+                    scan_type="udp"
+                )
+
+            except OSError as e:
+                error_code = getattr(e, "errno", 0)
+                if error_code in (errno.ECONNREFUSED, 10061):
+                    return PortResult(
+                        ip=ip,
+                        port=port,
+                        status=PortStatus.CLOSED,
+                        response_time_ms=(time.time() - start_time) * 1000,
+                        retry_count=retry,
+                        error_message=f"UDP端口不可达: {e}",
+                        protocol="udp",
+                        scan_type="udp"
+                    )
+
+                last_error = f"UDP Socket错误: {e}"
+                self.logger.debug(f"{ip}:{port}/udp - 异常: {e}")
+                return PortResult(
+                    ip=ip,
+                    port=port,
+                    status=PortStatus.UNKNOWN,
+                    response_time_ms=(time.time() - start_time) * 1000,
+                    retry_count=retry,
+                    error_message=last_error,
+                    protocol="udp",
+                    scan_type="udp"
+                )
+
+            except Exception as e:
+                last_error = f"UDP未知错误: {e}"
+                self.logger.debug(f"{ip}:{port}/udp - 异常: {e}")
+                break
+
+        return PortResult(
+            ip=ip,
+            port=port,
+            status=PortStatus.OPEN_OR_FILTERED,
+            response_time_ms=(time.time() - start_time) * 1000,
+            retry_count=retry,
+            error_message=last_error,
+            protocol="udp",
+            scan_type="udp"
+        )
+
+    def _scan_udp_single(self, ip: str, port: int) -> Tuple[PortStatus, float, str]:
+        start_time = time.time()
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(self.timeout)
+
+        try:
+            sock.connect((ip, port))
+            sock.send(b"HEKA_UDP_PROBE")
+            data = sock.recv(1024)
+            response_time = (time.time() - start_time) * 1000
+            sock.close()
+            return PortStatus.OPEN, response_time, f"收到UDP响应({len(data)} bytes)"
+
+        except socket.timeout:
+            sock.close()
+            raise
+
+        except ConnectionRefusedError:
+            sock.close()
+            raise
+
+        except OSError:
+            sock.close()
+            raise
+
+        except Exception:
+            sock.close()
+            raise
 
     def _scan_single(self, ip: str, port: int) -> Tuple[PortStatus, float]:
         start_time = time.time()

@@ -36,7 +36,6 @@ from services import ScanService
 MODE_LABELS = {
     "fast": "快速扫描",
     "full": "全连接扫描",
-    "syn": "SYN半开扫描",
     "udp": "UDP扫描",
     "comprehensive": "全面扫描",
 }
@@ -61,6 +60,7 @@ def get_progress_delay_ms() -> int:
 
 class ScanWorker(QThread):
     progress_changed = Signal(int, int, int, str, str)
+    result_signal = Signal(dict)
     scan_finished = Signal(dict)
 
     def __init__(self, target: str, ports: str, mode: str, parent=None):
@@ -88,12 +88,16 @@ class ScanWorker(QThread):
             if self.progress_delay_ms and completed > 0:
                 time.sleep(self.progress_delay_ms / 1000)
 
+        def report_result(row: dict):
+            self.result_signal.emit(row)
+
         self.start_time = time.time()
         result = self.service.scan(
             ip_or_cidr=self.target,
             port_str=self.ports,
             scan_mode=self.mode,
             progress_callback=report_progress,
+            result_callback=report_result,
         )
         result["target"] = self.target
         result["ports"] = self.ports
@@ -199,7 +203,7 @@ class MainWindow(QMainWindow):
         self.status_label = QLabel("准备就绪")
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
-        self.summary_label = QLabel("总数: 0 | 开放: 0 | 关闭: 0 | 过滤: 0 | 耗时: 0.00s")
+        self.summary_label = QLabel("总数: 0 | 开放: 0 | 关闭: 0 | 过滤: 0 | 开放或过滤: 0 | 未知: 0 | 耗时: 0.00s")
         status_layout.addWidget(self.status_label, 2)
         status_layout.addWidget(self.progress_bar, 3)
         status_layout.addWidget(self.summary_label, 4)
@@ -207,8 +211,8 @@ class MainWindow(QMainWindow):
 
         results_box = QGroupBox("扫描结果")
         results_layout = QVBoxLayout(results_box)
-        self.results_table = QTableWidget(0, 6)
-        self.results_table.setHorizontalHeaderLabels(["IP", "端口", "状态", "服务", "风险", "响应时间(ms)"])
+        self.results_table = QTableWidget(0, 7)
+        self.results_table.setHorizontalHeaderLabels(["IP", "端口", "协议", "状态", "服务", "风险", "响应时间(ms)"])
         self.results_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.results_table.setAlternatingRowColors(True)
@@ -265,8 +269,8 @@ class MainWindow(QMainWindow):
 
         details_box = QGroupBox("历史扫描详情")
         details_layout = QVBoxLayout(details_box)
-        self.history_detail_table = QTableWidget(0, 6)
-        self.history_detail_table.setHorizontalHeaderLabels(["IP", "端口", "状态", "服务", "风险", "响应时间(ms)"])
+        self.history_detail_table = QTableWidget(0, 7)
+        self.history_detail_table.setHorizontalHeaderLabels(["IP", "端口", "协议", "状态", "服务", "风险", "响应时间(ms)"])
         self.history_detail_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.history_detail_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.history_detail_table.setAlternatingRowColors(True)
@@ -475,12 +479,14 @@ class MainWindow(QMainWindow):
         self.target_input.setText(target)
         self.scan_button.setEnabled(False)
         self.scan_button.setText("扫描中...")
+        self.results_table.setRowCount(0)
         self.progress_bar.setValue(0)
         self.status_label.setText("扫描中 0/0 | 0% | 已耗时 00:00 | ETA 计算中")
         self.log_output.appendPlainText(f"[{datetime.now().strftime('%H:%M:%S')}] 开始扫描 {target} 端口 {ports}")
 
         self.worker = ScanWorker(target, ports, mode, self)
         self.worker.progress_changed.connect(self.update_progress)
+        self.worker.result_signal.connect(self.append_result_row)
         self.worker.scan_finished.connect(self.finish_scan)
         self.worker.start()
 
@@ -495,7 +501,7 @@ class MainWindow(QMainWindow):
         self.current_result = result
         self.scan_history.insert(0, result)
         self.save_scan_history()
-        self.render_result(result)
+        self.update_summary(result)
         self.refresh_history_table()
 
         self.scan_button.setEnabled(True)
@@ -521,37 +527,50 @@ class MainWindow(QMainWindow):
 
     def render_result(self, result: dict):
         self.render_results_table(self.results_table, result)
+        self.update_summary(result)
 
+    def update_summary(self, result: dict):
         stats = result.get("stats", {})
         self.summary_label.setText(
             f"总数: {stats.get('total', 0)} | 开放: {stats.get('open', 0)} | "
             f"关闭: {stats.get('closed', 0)} | 过滤: {stats.get('filtered', 0)} | "
+            f"开放或过滤: {stats.get('open_or_filtered', 0)} | 未知: {stats.get('unknown', 0)} | "
             f"耗时: {stats.get('duration', result.get('duration', 0)):.2f}s"
         )
+
+    def append_result_row(self, row: dict):
+        row_index = self.results_table.rowCount()
+        self.results_table.insertRow(row_index)
+        self.set_result_row(self.results_table, row_index, row)
+        self.results_table.scrollToBottom()
 
     def render_results_table(self, table: QTableWidget, result: dict):
         rows = result.get("results", [])
         table.setRowCount(len(rows))
 
         for row_index, row in enumerate(rows):
-            values = [
-                row.get("ip", ""),
-                str(row.get("port", "")),
-                self.status_text(row.get("status", "")),
-                row.get("service", "") or "Unknown",
-                self.risk_text(row.get("risk_level", "")),
-                f"{row.get('response_time', 0):.2f}",
-            ]
-            for col_index, value in enumerate(values):
-                item = QTableWidgetItem(value)
-                item.setTextAlignment(Qt.AlignCenter)
-                if col_index == 2:
-                    item.setForeground(self.status_color(row.get("status", "")))
-                if col_index == 4:
-                    item.setForeground(self.risk_color(row.get("risk_level", "")))
-                table.setItem(row_index, col_index, item)
+            self.set_result_row(table, row_index, row)
 
         table.resizeRowsToContents()
+
+    def set_result_row(self, table: QTableWidget, row_index: int, row: dict):
+        values = [
+            row.get("ip", ""),
+            str(row.get("port", "")),
+            row.get("protocol", "tcp").upper(),
+            self.status_text(row.get("status", "")),
+            row.get("service", "") or "Unknown",
+            self.risk_text(row.get("risk_level", "")),
+            f"{row.get('response_time', 0):.2f}",
+        ]
+        for col_index, value in enumerate(values):
+            item = QTableWidgetItem(value)
+            item.setTextAlignment(Qt.AlignCenter)
+            if col_index == 3:
+                item.setForeground(self.status_color(row.get("status", "")))
+            if col_index == 5:
+                item.setForeground(self.risk_color(row.get("risk_level", "")))
+            table.setItem(row_index, col_index, item)
 
     def load_scan_history(self) -> list:
         if not self.history_path.exists():
@@ -641,6 +660,8 @@ class MainWindow(QMainWindow):
                     "mode",
                     "ip",
                     "port",
+                    "protocol",
+                    "scan_type",
                     "status",
                     "service",
                     "risk_level",
@@ -656,6 +677,8 @@ class MainWindow(QMainWindow):
                     "mode": export_data["mode"],
                     "ip": row.get("ip", ""),
                     "port": row.get("port", ""),
+                    "protocol": row.get("protocol", ""),
+                    "scan_type": row.get("scan_type", ""),
                     "status": row.get("status", ""),
                     "service": row.get("service", ""),
                     "risk_level": row.get("risk_level", ""),
@@ -677,6 +700,8 @@ class MainWindow(QMainWindow):
                 {
                     "ip": row.get("ip", ""),
                     "port": row.get("port", ""),
+                    "protocol": row.get("protocol", "tcp"),
+                    "scan_type": row.get("scan_type", "tcp_connect"),
                     "status": self.status_text(row.get("status", "")),
                     "service": row.get("service", "") or "Unknown",
                     "risk_level": self.risk_text(row.get("risk_level", "")),
@@ -717,11 +742,17 @@ class MainWindow(QMainWindow):
         self.current_result = None
         self.progress_bar.setValue(0)
         self.status_label.setText("准备就绪")
-        self.summary_label.setText("总数: 0 | 开放: 0 | 关闭: 0 | 过滤: 0 | 耗时: 0.00s")
+        self.summary_label.setText("总数: 0 | 开放: 0 | 关闭: 0 | 过滤: 0 | 开放或过滤: 0 | 未知: 0 | 耗时: 0.00s")
 
     @staticmethod
     def status_text(status: str) -> str:
-        return {"open": "开放", "closed": "关闭", "filtered": "过滤", "unknown": "未知"}.get(status, status)
+        return {
+            "open": "开放",
+            "closed": "关闭",
+            "filtered": "过滤",
+            "open_or_filtered": "开放或过滤",
+            "unknown": "未知",
+        }.get(status, status)
 
     @staticmethod
     def risk_text(risk: str) -> str:
@@ -729,7 +760,13 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def status_color(status: str) -> QColor:
-        colors = {"open": "#198754", "closed": "#6c757d", "filtered": "#b58100", "unknown": "#6c757d"}
+        colors = {
+            "open": "#198754",
+            "closed": "#6c757d",
+            "filtered": "#b58100",
+            "open_or_filtered": "#b58100",
+            "unknown": "#6c757d",
+        }
         return QColor(colors.get(status, "#333333"))
 
     @staticmethod

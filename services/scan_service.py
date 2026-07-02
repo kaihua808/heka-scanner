@@ -28,7 +28,8 @@ class ScanService:
 
     def scan(self, ip_or_cidr: str, port_str: str = "1-1000",
              scan_mode: str = "full",
-             progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
+             progress_callback: Optional[Callable] = None,
+             result_callback: Optional[Callable] = None) -> Dict[str, Any]:
         try:
             ips = self._validate_inputs(ip_or_cidr)
             if not ips:
@@ -40,6 +41,7 @@ class ScanService:
                 return {"success": False, "error": "端口解析失败"}
 
             mode_params = self._get_mode_parameters(scan_mode)
+            scan_protocol = "udp" if scan_mode == "udp" else "tcp"
             self.logger.info(f"开始扫描({scan_mode}): {ips}, 端口: {ports}")
             self.audit_logger.log_scan_start(ips, port_str, scan_mode)
 
@@ -55,11 +57,17 @@ class ScanService:
             scan_id = f"scan_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
             self.performance_monitor.start_scan(scan_id)
 
+            def report_result(scan_result: PortResult):
+                if result_callback:
+                    result_callback(self._result_to_dict(scan_result))
+
             results = scheduler.scan(
                 targets=ips,
                 ports=ports,
                 progress_callback=progress_callback,
-                use_async=False
+                use_async=False,
+                result_callback=report_result if result_callback else None,
+                scan_protocol=scan_protocol
             )
 
             duration = self.performance_monitor.end_scan(scan_id)
@@ -79,7 +87,7 @@ class ScanService:
 
             self.audit_logger.log_scan_complete(ips, port_str, results, duration)
             self.baseline_manager.record_scan(
-                scan_type="default",
+                scan_type=scan_protocol,
                 ip_count=len(ips),
                 port_count=len(ports),
                 duration=duration,
@@ -131,7 +139,11 @@ class ScanService:
             "status": result.status.value if result.status else "unknown",
             "service": result.service or "",
             "response_time": result.response_time_ms,
-            "risk_level": self._get_risk_level(result.port)
+            "risk_level": self._get_risk_level(result.port),
+            "retry_count": result.retry_count,
+            "protocol": getattr(result, "protocol", "tcp"),
+            "scan_type": getattr(result, "scan_type", "tcp_connect"),
+            "error_message": result.error_message
         }
 
     def _get_risk_level(self, port: int) -> str:
@@ -149,6 +161,8 @@ class ScanService:
             "open": len([r for r in results if r.status == PortStatus.OPEN]),
             "closed": len([r for r in results if r.status == PortStatus.CLOSED]),
             "filtered": len([r for r in results if r.status == PortStatus.FILTERED]),
+            "open_or_filtered": len([r for r in results if r.status == PortStatus.OPEN_OR_FILTERED]),
+            "unknown": len([r for r in results if r.status == PortStatus.UNKNOWN]),
             "duration": duration
         }
 
@@ -180,13 +194,6 @@ class ScanService:
                 "timeout": 1.0,
                 "retry_count": 1,
                 "batch_size": 2000
-            },
-            "syn": {
-                "max_workers": 200,
-                "min_workers": 50,
-                "timeout": 1.5,
-                "retry_count": 1,
-                "batch_size": 1000
             },
             "udp": {
                 "max_workers": 150,
